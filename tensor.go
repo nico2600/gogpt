@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
 	"strings"
 	"sync"
 )
@@ -17,6 +18,35 @@ type Tensor struct {
 // Shape method returns the shape of the tensor
 func (t *Tensor) Shape() []int {
 	return t.shape
+}
+
+// NumElements method returns thenumber of element in the tensor
+func (t *Tensor) NumElements() int64 {
+	n := int64(1)
+	for _, d := range t.shape {
+		n *= int64(d)
+	}
+	return n
+}
+
+func (t *Tensor) Equal(tensorB Tensor) bool {
+	// compare the shape
+	if len(t.shape) != len(tensorB.shape) {
+		return false
+	}
+	for i, _ := range t.shape {
+		if t.shape[i] != tensorB.shape[i] {
+			return false
+		}
+	}
+
+	// compare each value
+	for i, _ := range t.data {
+		if t.data[i] != tensorB.data[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // Strides method returns the strides of the tensor
@@ -61,6 +91,20 @@ func (t *Tensor) At(indices ...int) (float64, error) {
 	return t.data[index], nil
 }
 
+// SetAt method set the value at the specified indices in the tensor
+func (t *Tensor) SetAt(value float64, indices ...int) error {
+	// Calculate the index in the data array based on the indices
+	index := 0
+	for i, dim := range t.shape {
+		if len(indices) <= i || indices[i] >= dim || indices[i] < 0 {
+			return errors.New("index out of bounds")
+		}
+		index = index*dim + indices[i]
+	}
+	t.data[index] = value
+	return nil
+}
+
 // CopyTo method copies the data from the current tensor to the target tensor
 func (t *Tensor) CopyTo(target *Tensor) error {
 	if !equalShapes(t.shape, target.shape) {
@@ -70,9 +114,98 @@ func (t *Tensor) CopyTo(target *Tensor) error {
 	return nil
 }
 
-// Transpose method transposes the dimensions of the tensor
+// Transpose method transposes the dimensions of the tensor in-place
 func (t *Tensor) Transpose() {
-	// Implement the transpose logic here
+	// Check if the tensor has at least 2 dimensions
+	if len(t.shape) < 2 {
+		return // No change needed for 1D tensors
+	}
+
+	// Calculate the new shape for transposition
+	newShape := make([]int, len(t.shape))
+	for i := range newShape {
+		newShape[i] = t.shape[len(t.shape)-1-i]
+	}
+
+	transposedStrides := make([]int, len(newShape))
+	transposedStrides[0] = 1
+	for i := 1; i < len(newShape); i++ {
+		transposedStrides[i] = transposedStrides[i-1] * newShape[i-1]
+	}
+
+	// Create a copy of the data for swapping
+	dataCopy := make([]float64, len(t.data))
+	copy(dataCopy, t.data)
+
+	// Perform in-place transposition by swapping values
+	for i := 0; i < len(t.data); i++ {
+		indicesOriginal := make([]int, len(t.shape))
+		indexOriginal := i
+		indicesTransposed := make([]int, len(newShape))
+
+		// Calculate indices for the original shape
+		for j := 0; j < len(t.shape); j++ {
+			indicesOriginal[j] = indexOriginal % t.shape[j]
+			indexOriginal /= t.shape[j]
+		}
+
+		// Calculate indices for the transposed shape
+		for j := 0; j < len(newShape); j++ {
+			indicesTransposed[j] = indicesOriginal[len(newShape)-1-j]
+		}
+
+		// Calculate the corresponding indices in the dataCopy
+		indexCopy := 0
+		for j := 0; j < len(newShape); j++ {
+			indexCopy += indicesTransposed[j] * transposedStrides[j]
+		}
+
+		// Swap values between data and dataCopy
+		t.data[i], dataCopy[indexCopy] = dataCopy[indexCopy], t.data[i]
+	}
+
+	// Update the shape of the tensor
+	t.shape = newShape
+}
+
+// Clone method creates a deep copy of the tensor
+func (t *Tensor) Clone() *Tensor {
+	// Create a new tensor with the same shape
+	clone := &Tensor{
+		data:  make([]float64, len(t.data)),
+		shape: make([]int, len(t.shape)),
+	}
+
+	// Copy the data and shape from the original tensor
+	copy(clone.data, t.data)
+	copy(clone.shape, t.shape)
+
+	return clone
+}
+
+// TransposeNew method returns a new tensor with transposed dimensions
+func (t *Tensor) TransposeNew() *Tensor {
+	// Check if the tensor has at least 2 dimensions
+	if len(t.shape) < 2 {
+		return t.Clone() // No change needed for 1D tensors, return the same tensor
+	}
+
+	// Calculate the new shape for transposition
+	newShape := make([]int, len(t.shape))
+	for i := range newShape {
+		newShape[i] = t.shape[len(t.shape)-1-i]
+	}
+
+	// Create a new tensor with the transposed shape
+	transposedTensor := &Tensor{
+		data:  make([]float64, len(t.data)),
+		shape: newShape,
+	}
+
+	copy(transposedTensor.data, t.data)
+	transposedTensor.Transpose()
+
+	return transposedTensor
 }
 
 // SoftMax applies the softmax function to a Tensor along a specified axis and returns a new Tensor.
@@ -407,21 +540,28 @@ func equalShapes(shape1, shape2 []int) bool {
 
 // Concat function concatenates multiple tensors into a new tensor
 func Concat(tensors ...*Tensor) (*Tensor, error) {
+	// Check if there are any tensors to concatenate
 	if len(tensors) == 0 {
 		return nil, errors.New("no tensors to concatenate")
 	}
 
-	// Check if all tensors have the same shape except along the concatenation axis
+	// Create a copy of the shape of the first tensor as the target shape
 	targetShape := append([]int(nil), tensors[0].shape...)
+
+	// Get the concatenation axis
 	concatDim := targetShape[len(targetShape)-1]
+
+	// Iterate over the remaining tensors and compare their shapes with the target shape
 	for _, tensor := range tensors[1:] {
+		// Exclude the last dimension for comparison
 		if !equalShapes(targetShape[:len(targetShape)-1], tensor.shape[:len(tensor.shape)-1]) {
 			return nil, errors.New("tensors have incompatible shapes for concatenation")
 		}
+		// Calculate the new size of the concatenation axis
 		concatDim += tensor.shape[len(tensor.shape)-1]
 	}
 
-	// Create a new tensor with the concatenated shape
+	// Create a new tensor with an empty data slice and the target shape
 	result := &Tensor{make([]float64, 0, len(tensors)*concatDim), targetShape}
 
 	// Copy data from input tensors to the result tensor
@@ -430,4 +570,76 @@ func Concat(tensors ...*Tensor) (*Tensor, error) {
 	}
 
 	return result, nil
+}
+
+// DotProduct calculates the dot product of two tensors.
+// It checks if the shapes of the tensors are compatible and returns an error if they are not.
+//
+// Example Usage:
+//
+//	a := &Tensor{
+//	  data:  []float64{1, 2, 3},
+//	  shape: []int{3},
+//	}
+//	b := &Tensor{
+//	  data:  []float64{4, 5, 6},
+//	  shape: []int{3},
+//	}
+//	result, err := DotProduct(a, b)
+//	if err != nil {
+//	  fmt.Println(err)
+//	  return
+//	}
+//	fmt.Println(result.data) // Output: [32]
+//
+// Inputs:
+//
+//	a: A pointer to a Tensor struct representing the first tensor.
+//	b: A pointer to a Tensor struct representing the second tensor.
+//
+// Outputs:
+//
+//	result: A pointer to a Tensor struct representing the dot product result.
+//	err: An error indicating if the shapes of the tensors are incompatible.
+func DotProduct(a, b *Tensor) (*Tensor, error) {
+	// Check if the tensors are nil
+	if a == nil || b == nil {
+		return nil, fmt.Errorf("input tensors cannot be nil")
+	}
+
+	// Check if the shapes of both tensors are compatible for dot product
+	if !compatibleShapes(a.shape, b.shape) {
+		return nil, fmt.Errorf("incompatible shapes for dot product: %v and %v", a.shape, b.shape)
+	}
+
+	// Calculate the dot product
+	resultShape := []int{1}
+	result := &Tensor{
+		data:  make([]float64, 1), // Dot product results in a single scalar
+		shape: resultShape,
+	}
+
+	// Compute the dot product
+	dotProduct := new(big.Float)
+	for i := 0; i < len(a.data); i++ {
+		aFloat := new(big.Float).SetFloat64(a.data[i])
+		bFloat := new(big.Float).SetFloat64(b.data[i])
+		dotProduct.Add(dotProduct, new(big.Float).Mul(aFloat, bFloat))
+	}
+
+	result.data[0], _ = dotProduct.Float64()
+	return result, nil
+}
+
+// Helper function to check if shapes are compatible
+func compatibleShapes(shapeA, shapeB []int) bool {
+	if len(shapeA) != len(shapeB) {
+		return false
+	}
+	for i := range shapeA {
+		if shapeA[i] != shapeB[i] {
+			return false
+		}
+	}
+	return true
 }
