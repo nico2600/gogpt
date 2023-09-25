@@ -34,8 +34,8 @@ func (t *Tensor) Strides() ([]int, error) {
 	return strides, nil
 }
 
-// ReShape method modifies the dimensions of the tensor
-func (t *Tensor) ReShape(newShape []int) error {
+// Reshape method modifies the dimensions of the tensor
+func (t *Tensor) Reshape(newShape []int) error {
 	// Check if the product of new dimensions is equal to the size of the underlying data array
 	newSize := 1
 	for _, dim := range newShape {
